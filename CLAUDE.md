@@ -16,11 +16,14 @@ cp .env.example .env
 # Start services (PostgreSQL, Redis, Qdrant)
 docker-compose up -d postgres redis qdrant
 
-# Install dependencies
+# Install backend dependencies
 pip install -e ".[dev]"
 
 # Run backend
 uvicorn backend.app.main:app --reload --port 8000
+
+# Run frontend (in separate terminal)
+cd frontend && npm install && npm run dev
 
 # Run with Docker (full stack)
 docker-compose up --build
@@ -33,6 +36,23 @@ mypy backend/
 pytest backend/tests/
 pytest backend/tests/test_workflow.py -k "test_name"  # single test
 ```
+
+## Frontend
+
+Next.js 14 web interface at `frontend/` with Vercel-style design (Geist fonts, dark/light mode, shadcn/ui).
+
+**Routes:**
+- `/workflows` - List/create workflows
+- `/workflows/[id]` - Workflow detail with agent timeline
+- `/approvals` - Pending approvals list
+- `/approvals/[id]` - Review interface (approve/reject/request changes)
+- `/tenants` - Manage institutions
+
+**Key Frontend Files:**
+- `frontend/lib/types.ts` - TypeScript types matching backend schemas
+- `frontend/lib/api.ts` - API client with fetch wrapper
+- `frontend/lib/hooks/` - SWR hooks with auto-polling for running workflows
+- `frontend/components/workflows/workflow-timeline.tsx` - Agent execution visualization
 
 ## Architecture
 
@@ -56,9 +76,10 @@ pytest backend/tests/test_workflow.py -k "test_name"  # single test
 ```
 
 **Key Files:**
-- `backend/agents/graph/state.py` - LangGraph state definition
-- `backend/agents/graph/workflow.py` - State graph with HITL checkpoints
-- `backend/app/api/routes/workflows.py` - Workflow API endpoints
+- `backend/agents/graph/state.py` - LangGraph state definition (`GrowthWorkflowState` TypedDict)
+- `backend/agents/graph/workflow.py` - State graph with HITL checkpoints, `run_growth_workflow()` and `resume_workflow_with_approval()` entry points
+- `backend/agents/agents/base.py` - `BaseAgent` class all agents extend (uses `ChatAnthropic` with JSON output parsing)
+- `backend/app/api/routes/workflows.py` - Workflow CRUD API
 - `backend/app/api/routes/approvals.py` - Human approval API
 
 **8 Specialist Agents** (`backend/agents/agents/`):
@@ -80,6 +101,22 @@ Orchestrator → Global Benchmark → Product Strategy → Content Factory
 → Aggregate Results → Human Review → Execute Approved → END
 ```
 
+## Human-in-the-Loop (HITL) Pattern
+
+Workflows use LangGraph's `interrupt_before` to pause at human review:
+1. Workflow runs through agents → hits `human_review` node → pauses
+2. State persisted to PostgreSQL via `AsyncPostgresSaver`
+3. API returns `awaiting_approval: true` with `pending_approvals` preview
+4. Human calls `POST /api/v1/approvals/{workflow_id}` with `approve|reject|request_changes`
+5. `resume_workflow_with_approval()` continues the graph
+
+## Adding New Agents
+
+1. Create `backend/agents/agents/new_agent.py` extending `BaseAgent`
+2. Implement `async execute(self, state: GrowthWorkflowState)` method
+3. Add node wrapper function: `async def new_agent_node(state) -> state`
+4. Register in `workflow.py`: add node, add edge, update routing if needed
+
 ## Compliance Constraints (Critical)
 
 All content must comply with China's post-315 medical advertising regulations:
@@ -94,7 +131,7 @@ See `backend/agents/agents/china_compliance.py` for full compliance ruleset.
 ## Workflow Types
 
 - `full_growth_plan` - Complete 30/60/90 day growth strategy
-- `content_generation` - Generate platform-specific content
+- `content_generation` - Generate platform-specific content (uses `create_content_workflow()`)
 - `influencer_matching` - KOL discovery and outreach
 - `community_strategy` - Social community operations
 - `product_strategy` - Product/pricing recommendations
